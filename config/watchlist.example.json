@@ -1,0 +1,14 @@
+{
+  "watches": [
+    {
+      "url": "https://www.aloyoga.com/products/w5473r-high-waist-airbrush-legging-anthracite",
+      "target_price": "150.00",
+      "target_currency": "SGD",
+      "sizes": ["XS", "S"],
+      "colors": [],
+      "min_discount_pct": "30",
+      "min_drop_pct": "5",
+      "min_drop_abs": "2.00"
+    }
+  ]
+}

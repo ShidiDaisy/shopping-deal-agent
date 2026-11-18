@@ -497,3 +497,15 @@ class Store:
                     to_iso(utcnow()),
                 ),
             )
+
+    def last_fetch_at(self) -> datetime | None:
+        """When the most recent check attempt (of any outcome) was logged.
+
+        Lets an operator or an external healthcheck answer "is this agent
+        still running at all", independent of whether that check succeeded.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(created_at) AS latest FROM fetch_log"
+            ).fetchone()
+        return from_iso(row["latest"]) if row and row["latest"] else None

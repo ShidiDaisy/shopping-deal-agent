@@ -8,6 +8,7 @@ import click
 from click.core import ParameterSource
 
 from .agent import DealAgent
+from .clock import utcnow
 from .config import Settings, WatchSpec, load_watchlist
 from .fetch.fixture_fetcher import FixtureFetcher
 from .fetch.scrapling_fetcher import ScraplingFetcher
@@ -15,6 +16,7 @@ from .logging_setup import setup_logging
 from .money import format_money
 from .notify import AlertDispatcher
 from .scheduler import build_scheduler
+from .singleton_lock import AlreadyRunning, SingletonLock
 from .store import Store
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -58,6 +60,19 @@ def _build_agent(ctx: click.Context, fixture: str | None, url: str | None):
         fetcher = ScraplingFetcher(settings)
     agent = DealAgent(settings, store, fetcher, AlertDispatcher(settings, store))
     return settings, store, agent
+
+
+def _close_fetcher(fetcher) -> None:
+    """Release a ScraplingFetcher's cached browser, if it has one. No-op for
+    FixtureFetcher and other fetchers that don't hold OS resources."""
+    closer = getattr(fetcher, "close", None)
+    if callable(closer):
+        closer()
+
+
+def _lock_path(settings: Settings) -> Path:
+    db = settings.database_path
+    return db.with_name(db.name + ".lock")
 
 
 def _run_and_print(agent: DealAgent) -> None:
@@ -212,11 +227,18 @@ def watch_remove(ctx: click.Context, watch_id: int, yes: bool) -> None:
 @click.pass_context
 def check(ctx: click.Context, fixture: str | None, url: str | None) -> None:
     """Run one check across all enabled watches."""
-    _, store, agent = _build_agent(ctx, fixture, url)
-    if not store.list_watches():
-        click.echo("No enabled watches. Try: sda demo")
-        return
-    _run_and_print(agent)
+    settings, store, agent = _build_agent(ctx, fixture, url)
+    try:
+        if not store.list_watches():
+            click.echo("No enabled watches. Try: sda demo")
+            return
+        try:
+            with SingletonLock(_lock_path(settings)):
+                _run_and_print(agent)
+        except AlreadyRunning as exc:
+            raise click.ClickException(str(exc))
+    finally:
+        _close_fetcher(agent.fetcher)
 
 
 @main.command("demo")
@@ -243,7 +265,10 @@ def demo(ctx: click.Context, fixture: str) -> None:
             store.upsert_watch(spec)
     click.echo("Demo: sample watchlist loaded, local fixture, dry-run alerts.")
     _, _, agent = _build_agent(ctx, fixture, None)
-    _run_and_print(agent)
+    try:
+        _run_and_print(agent)
+    finally:
+        _close_fetcher(agent.fetcher)
     db_flag = f"--db {ctx.obj['settings'].database_path} " if "demo.sqlite3" in str(
         ctx.obj["settings"].database_path
     ) else ""
@@ -255,17 +280,28 @@ def demo(ctx: click.Context, fixture: str) -> None:
 @click.pass_context
 def run(ctx: click.Context, interval: float) -> None:
     """Run scheduled checks until interrupted."""
-    _, store, agent = _build_agent(ctx, None, None)
-    if not store.list_watches():
-        click.echo("No enabled watches. Try: sda watch import config/watchlist.example.json")
-        return
-    scheduler = build_scheduler(agent, interval)
-    click.echo(f"Scheduled every {interval} minute(s). Ctrl-C to stop.")
+    settings, store, agent = _build_agent(ctx, None, None)
     try:
-        scheduler.start()
-    except (KeyboardInterrupt, SystemExit):
-        scheduler.shutdown(wait=False)
-        click.echo("Stopped.")
+        if not store.list_watches():
+            click.echo("No enabled watches. Try: sda watch import config/watchlist.example.json")
+            return
+        lock = SingletonLock(_lock_path(settings))
+        try:
+            lock.acquire()
+        except AlreadyRunning as exc:
+            raise click.ClickException(str(exc))
+        try:
+            scheduler = build_scheduler(agent, interval)
+            click.echo(f"Scheduled every {interval} minute(s). Ctrl-C to stop.")
+            try:
+                scheduler.start()
+            except (KeyboardInterrupt, SystemExit):
+                scheduler.shutdown(wait=False)
+                click.echo("Stopped.")
+        finally:
+            lock.release()
+    finally:
+        _close_fetcher(agent.fetcher)
 
 
 @main.command("history")
@@ -319,3 +355,27 @@ def verify_config(ctx: click.Context) -> None:
     click.echo(f"telegram ready    : {settings.telegram_enabled}")
     click.echo(f"email ready       : {settings.email_enabled}")
     click.echo(f"max page age      : {settings.page_max_age_seconds}s")
+
+
+@main.command("status")
+@click.option(
+    "--max-age-minutes", type=float, default=90.0, show_default=True,
+    help="Exit non-zero if the last check is older than this",
+)
+@click.pass_context
+def status(ctx: click.Context, max_age_minutes: float) -> None:
+    """Report how long ago the agent last ran a check.
+
+    Nothing about a long-running ``run`` daemon tells an operator it's still
+    alive beyond watching the console; this is a cheap hook for an external
+    healthcheck/monitor (cron, systemd, Nagios-style check) to poll instead.
+    """
+    last = _store(ctx).last_fetch_at()
+    if last is None:
+        click.echo("No checks have run yet.")
+        raise SystemExit(1)
+    age_seconds = (utcnow() - last).total_seconds()
+    click.echo(f"Last check: {last.isoformat()} ({age_seconds / 60:.1f} minute(s) ago)")
+    if age_seconds > max_age_minutes * 60:
+        click.echo(f"STALE: no check recorded in the last {max_age_minutes:.0f} minute(s).")
+        raise SystemExit(1)

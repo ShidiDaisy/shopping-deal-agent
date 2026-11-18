@@ -65,7 +65,13 @@ def evaluate(ctx: RuleContext) -> list[AlertEvent]:
     assert price is not None  # guaranteed by can_alert
     currency = observation.currency
     title = observation.title or "Product"
-    suffix = f"\n{observation.url}"
+    # Nothing here tracks shipping fees or voucher/cart-minimum requirements,
+    # so a quoted price is the item price only; say so explicitly rather than
+    # let the alert imply it's the total landed cost.
+    suffix = (
+        "\nNote: price excludes shipping and voucher codes unless stated above."
+        f"\n{observation.url}"
+    )
     pretty = format_money(price, currency)
     events: list[AlertEvent] = []
 

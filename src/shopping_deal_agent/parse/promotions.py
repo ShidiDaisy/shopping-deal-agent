@@ -2,8 +2,8 @@
 
 A promotion is only ``applicable`` when the page explicitly says it is
 unrestricted (sitewide / all orders / no exclusions). Anything with exclusions,
-membership gates, minimum spends or unstated scope is recorded but never used
-to trigger an alert.
+membership gates, minimum spends, explicit end-of-promotion language, or
+unstated scope is recorded but never used to trigger an alert.
 """
 from __future__ import annotations
 
@@ -26,6 +26,16 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bfree\s+(?:standard\s+)?shipping\b", re.I), "free_shipping"),
 )
 
+# None of the patterns above capture a date, so there was never a signal that
+# a matched promotion is still running rather than a leftover/stale banner
+# (common with cached or templated markup). An explicit end-of-promotion
+# phrase overrides any "unrestricted" marker in the same window: a page
+# saying "this offer has ended" must never read as a live, applicable deal.
+_EXPIRED_MARKERS = (
+    "has ended", "offer ended", "offer has ended", "sale has ended",
+    "sale ended", "promotion has ended", "promotion ended", "deal has ended",
+    "expired", "no longer valid", "no longer available",
+)
 _EXCLUSION_MARKERS = (
     "members only", "member exclusive", "selected items", "selected styles",
     "exclusions apply", "excludes", "new arrivals", "app only", "minimum spend",
@@ -41,6 +51,9 @@ _WINDOW = 200
 
 def _applicability(text: str, start: int, end: int) -> tuple[bool, str]:
     window = text[max(0, start - _WINDOW) : min(len(text), end + _WINDOW)].casefold()
+    for marker in _EXPIRED_MARKERS:
+        if marker in window:
+            return False, f"promotion text indicates it has expired ({marker})"
     for marker in _EXCLUSION_MARKERS:
         if marker in window:
             return False, f"restricted promotion ({marker}); needs manual confirmation"

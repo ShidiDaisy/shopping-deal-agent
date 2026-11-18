@@ -90,6 +90,17 @@ def test_fetch_log(store, watch):
     assert row["outcome"] == "blocked"
 
 
+def test_last_fetch_at_is_none_before_any_check(store):
+    assert store.last_fetch_at() is None
+
+
+def test_last_fetch_at_reflects_the_most_recent_log_entry(store, watch):
+    store.log_fetch(watch.id, watch.url, 200, "http", "ok", None)
+    last = store.last_fetch_at()
+    assert last is not None
+    assert (utcnow() - last).total_seconds() < 5
+
+
 def test_delete_watch_cascades_to_all_dependent_rows(store, watch):
     store.save_observation(_observation(watch))
     store.save_alert(

@@ -73,15 +73,22 @@ class ScraplingFetcher:
         self.limiter = limiter or DomainRateLimiter(settings.min_request_interval_seconds)
         self._http_call = http_call or self._http
         self._browser_call = browser_call or self._browser
+        self._playwright = None
+        self._browser_instance = None
 
     def fetch(self, url: str) -> FetchResult:
         allowed, reason = self.robots.check(url)
         if not allowed:
             return blocked_result(url, reason or "robots.txt disallows this path")
 
-        self.limiter.wait(url)
+        def _rate_limited_call() -> FetchResult:
+            # Re-checked on every retry attempt too, not just the first: a
+            # 503/timeout retry sequence must not outrun the per-host gap.
+            self.limiter.wait(url)
+            return self._http_call(url)
+
         result = retry_fetch(
-            lambda: self._http_call(url),
+            _rate_limited_call,
             max_retries=self.settings.max_retries,
             base_delay=self.settings.retry_base_delay_seconds,
         )
@@ -141,38 +148,77 @@ class ScraplingFetcher:
             ),
         )
 
+    def _ensure_browser(self):
+        """Lazily launch one Chromium instance and reuse it across calls.
+
+        A fresh ``sync_playwright()`` driver + browser process per fetch was
+        both expensive and leak-prone (nothing here recreates it unless
+        needed). Self-heals if the cached browser process has died.
+        """
+        if self._browser_instance is not None and not self._browser_instance.is_connected():
+            self.close()
+        if self._browser_instance is None:
+            from playwright.sync_api import sync_playwright
+
+            self._playwright = sync_playwright().start()
+            self._browser_instance = self._playwright.chromium.launch(headless=True)
+        return self._browser_instance
+
+    def close(self) -> None:
+        """Release the cached Playwright browser/driver, if one was started."""
+        if self._browser_instance is not None:
+            try:
+                self._browser_instance.close()
+            except Exception:
+                pass
+            self._browser_instance = None
+        if self._playwright is not None:
+            try:
+                self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None
+
     def _browser(self, url: str) -> FetchResult:
         """Render JS with a plain headless Chromium. No stealth, no solving."""
         try:
-            from playwright.sync_api import sync_playwright
+            browser = self._ensure_browser()
         except ImportError as exc:
             return FetchResult(
                 url=url, final_url=url, status_code=None, html="",
                 fetched_at=utcnow(), transport="browser",
                 error=f"playwright unavailable ({exc}); run: playwright install chromium",
             )
-        try:
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
-                context = browser.new_context(
-                    user_agent=self.settings.user_agent, locale="en-SG"
-                )
-                page = context.new_page()
-                response = page.goto(
-                    url,
-                    wait_until="domcontentloaded",
-                    timeout=self.settings.browser_timeout_ms,
-                )
-                html = page.content()
-                status = response.status if response is not None else None
-                final_url = page.url
-                context.close()
-                browser.close()
         except Exception as exc:
             return FetchResult(
                 url=url, final_url=url, status_code=None, html="",
                 fetched_at=utcnow(), transport="browser", error=str(exc),
             )
+
+        context = None
+        try:
+            context = browser.new_context(
+                user_agent=self.settings.user_agent, locale="en-SG"
+            )
+            page = context.new_page()
+            response = page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=self.settings.browser_timeout_ms,
+            )
+            html = page.content()
+            status = response.status if response is not None else None
+            final_url = page.url
+        except Exception as exc:
+            return FetchResult(
+                url=url, final_url=url, status_code=None, html="",
+                fetched_at=utcnow(), transport="browser", error=str(exc),
+            )
+        finally:
+            # The context (and its pages) must always be released, success or
+            # not; only the shared browser process itself is kept across calls.
+            if context is not None:
+                context.close()
         return FetchResult(
             url=url,
             final_url=final_url,

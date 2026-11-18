@@ -28,3 +28,21 @@ def test_unstated_scope_is_not_applicable():
 
 def test_no_promotions_on_plain_text():
     assert extract_promotions("Add to bag. Free returns within 30 days.") == ()
+
+
+def test_expired_promotion_is_not_applicable_even_when_sitewide():
+    """A stale leftover banner ("ended") must not read as a live deal just
+    because it also contains an unrestricted-scope marker."""
+    promotions = extract_promotions("Extra 20% off sitewide. This offer has ended.")
+    assert promotions
+    assert all(not promo.applicable for promo in promotions)
+    assert any("expired" in promo.reason for promo in promotions)
+
+
+def test_expired_marker_takes_priority_over_exclusion_marker_too():
+    promotions = extract_promotions(
+        "Extra 20% off sitewide, members only. Promotion has ended."
+    )
+    assert promotions
+    assert all(not promo.applicable for promo in promotions)
+    assert any("expired" in promo.reason for promo in promotions)

@@ -27,6 +27,20 @@ def test_price_discount_and_promotion_fire(watch):
     }
 
 
+def test_price_bearing_alerts_disclose_shipping_and_voucher_exclusion(watch):
+    observation = _observation(watch)
+    events = evaluate(
+        RuleContext(watch=watch, observation=observation, observation_id=1)
+    )
+    assert events
+    for event in events:
+        assert "shipping" in event.message.lower()
+        assert "voucher" in event.message.lower()
+        # the disclosure must not push the headline off the first line, since
+        # the CLI only prints message.splitlines()[0]
+        assert "shipping" not in event.message.splitlines()[0].lower()
+
+
 def test_unverified_observation_produces_no_events(watch):
     observation = replace(
         _observation(watch),

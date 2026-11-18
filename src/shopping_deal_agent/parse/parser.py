@@ -11,6 +11,15 @@ from .dom import make_selector, visible_text
 from .promotions import extract_promotions
 
 
+# jsonld/embedded read explicit structured fields (schema.org Offer, OpenGraph
+# meta tags, embedded product JSON); css is generic last-resort guessing
+# (css.py's own docstring: "intentionally generic... lowest confidence, last
+# resort"). Filling a gap in the structured-data price from another
+# structured source is reasonable; filling it from a generic CSS guess is how
+# an unrelated "was" price on the page turns into a fabricated discount.
+_TRUSTED_ORIGINAL_PRICE_STRATEGIES = frozenset({"jsonld", "embedded"})
+
+
 def _merge(primary: RawProduct, others: list[RawProduct]) -> RawProduct:
     title = primary.title
     currency = primary.currency
@@ -22,7 +31,8 @@ def _merge(primary: RawProduct, others: list[RawProduct]) -> RawProduct:
     for other in others:
         title = title or other.title
         currency = currency or other.currency
-        original_price = original_price or other.original_price
+        if original_price is None and other.strategy in _TRUSTED_ORIGINAL_PRICE_STRATEGIES:
+            original_price = other.original_price
         if availability is Availability.UNKNOWN:
             availability = other.availability
         for size, in_stock in other.sizes.items():
@@ -86,6 +96,21 @@ class ProductParser:
             notes.append(
                 "conflicting prices across strategies: "
                 + ", ".join(str(price) for price in distinct_prices)
+            )
+        skipped_originals = [
+            f"{other.strategy}={other.original_price}"
+            for other in found[1:]
+            if primary.original_price is None
+            and other.original_price is not None
+            and other.strategy not in _TRUSTED_ORIGINAL_PRICE_STRATEGIES
+        ]
+        if skipped_originals and not any(
+            other.strategy in _TRUSTED_ORIGINAL_PRICE_STRATEGIES and other.original_price is not None
+            for other in found[1:]
+        ):
+            notes.append(
+                "original price only available from a generic CSS match "
+                f"({', '.join(skipped_originals)}); not used, no discount computed"
             )
         merged = _merge(primary, found[1:])
         promotions = extract_promotions(visible_text(page))

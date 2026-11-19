@@ -121,3 +121,26 @@ def test_second_check_is_rejected_while_another_instance_holds_the_lock(monkeypa
     fixture_path = str(FIXTURE_DIR / "adidas_verified_deal.html")
     result = runner.invoke(cli.main, ["check", "--fixture", fixture_path, "--url", URL])
     assert result.exit_code == 0, result.output
+
+
+def test_run_shuts_down_the_scheduler_gracefully_on_interrupt(monkeypatch, tmp_path):
+    """Ctrl-C must wait for an in-flight check to finish, not cut it off."""
+    runner = _runner(monkeypatch, tmp_path)
+    runner.invoke(cli.main, ["watch", "add", "--url", URL, "--target", "45.00"])
+
+    shutdown_calls: list[bool] = []
+
+    class StubScheduler:
+        def start(self) -> None:
+            raise KeyboardInterrupt
+
+        def shutdown(self, wait: bool = False) -> None:
+            shutdown_calls.append(wait)
+
+    monkeypatch.setattr(cli, "build_scheduler", lambda agent, interval: StubScheduler())
+
+    result = runner.invoke(cli.main, ["run", "--interval", "60"])
+
+    assert result.exit_code == 0, result.output
+    assert shutdown_calls == [True]
+    assert "Stopped." in result.output

@@ -1,0 +1,42 @@
+name: CI
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install locked dependencies
+        run: pip install -r requirements-lock.txt -e . --no-deps
+
+      - name: Run tests
+        run: pytest -q
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    # Advisory only: a new CVE in a pinned dependency shouldn't block a merge
+    # before a human has triaged it, but it must still show up somewhere.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install locked dependencies
+        run: pip install -r requirements-lock.txt -e . --no-deps
+
+      - name: pip-audit
+        run: |
+          pip install pip-audit
+          pip-audit --local

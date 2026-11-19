@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-cov>=5"]
+dev = ["pytest>=8", "pytest-cov>=5", "pip-audit>=2.7"]
 
 [project.scripts]
 sda = "shopping_deal_agent.cli:main"

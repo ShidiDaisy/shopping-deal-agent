@@ -75,7 +75,11 @@ def retry_fetch(
             return result
         delay = base_delay * (2**attempt) + generator.uniform(0, 0.25)
         sleeper(delay)
-    return result  # unreachable, kept for type checkers
+    # Reached only when max_retries < 0: max(0, max_retries) + 1 == 1, so the
+    # loop runs exactly once and falls through here instead of returning
+    # inside the loop body. `result` is still the one response we got, so
+    # this remains correct -- it's a defensive fallback, not dead code.
+    return result
 
 
 class RobotsGuard:

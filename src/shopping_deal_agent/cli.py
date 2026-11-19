@@ -296,7 +296,10 @@ def run(ctx: click.Context, interval: float) -> None:
             try:
                 scheduler.start()
             except (KeyboardInterrupt, SystemExit):
-                scheduler.shutdown(wait=False)
+                # wait=True: let an in-flight check_all() (and its
+                # save_observation transaction) finish before exiting, rather
+                # than cutting it off mid-write.
+                scheduler.shutdown(wait=True)
                 click.echo("Stopped.")
         finally:
             lock.release()

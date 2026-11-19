@@ -57,6 +57,24 @@ def test_blocked_response_is_never_retried():
     assert len(calls) == 1
 
 
+def test_negative_max_retries_still_calls_once_and_returns_that_result():
+    """A negative max_retries collapses the loop to a single iteration whose
+    `attempt == max_retries` check can never be True (0 != -1); with a
+    retryable result that forces execution past the in-loop return, this
+    exercises the fallback `return result` after the loop."""
+    calls = []
+
+    def call():
+        calls.append(1)
+        return make_fetch("", status_code=503)
+
+    result = retry_fetch(
+        call, max_retries=-1, base_delay=0, sleeper=lambda _: None, rng=random.Random(0)
+    )
+    assert len(calls) == 1
+    assert result.status_code == 503
+
+
 def test_robots_disallow():
     guard = RobotsGuard(
         "TestBot", loader=lambda _: "User-agent: *\nDisallow: /3-stripes"
